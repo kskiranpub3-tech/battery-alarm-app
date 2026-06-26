@@ -3,14 +3,11 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ads.dart';
 import 'battery_monitor_service.dart';
-import 'purchase_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeBackgroundService();
-  await initAds();
   runApp(const BatteryAlarmApp());
 }
 
@@ -48,34 +45,12 @@ class _HomeScreenState extends State<HomeScreen> {
   TimeOfDay _quietEnd = const TimeOfDay(hour: 7, minute: 0);
   bool _volumeOverride = true;
   double _alarmVolume = 0.8;
-  bool _isPro = false;
   bool _loaded = false;
-  final PurchaseService _purchases = PurchaseService();
 
   @override
   void initState() {
     super.initState();
     _load();
-    _initPurchases();
-  }
-
-  Future<void> _initPurchases() async {
-    // When a purchase/restore completes, reflect it in the UI immediately.
-    _purchases.isPro.addListener(() {
-      if (_purchases.isPro.value && mounted) {
-        setState(() => _isPro = true);
-      }
-    });
-    _purchases.status.addListener(() {
-      if (mounted) setState(() {});
-    });
-    await _purchases.init();
-  }
-
-  @override
-  void dispose() {
-    _purchases.dispose();
-    super.dispose();
   }
 
   Future<void> _load() async {
@@ -96,7 +71,6 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       _volumeOverride = p.getBool(kVolumeOverrideKey) ?? true;
       _alarmVolume = p.getDouble(kAlarmVolumeKey) ?? 0.8;
-      _isPro = p.getBool(kProTierKey) ?? false;
       _loaded = true;
     });
   }
@@ -147,7 +121,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!await service.isRunning()) {
         await service.startService();
       }
-      // Give the isolate a moment to spin up before pushing settings.
       await Future.delayed(const Duration(milliseconds: 600));
       _pushSettings();
     } else {
@@ -179,14 +152,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     return Scaffold(
       appBar: AppBar(title: const Text('Battery Alarm')),
-      bottomNavigationBar: _isPro
-          ? null
-          : const SafeArea(
-              child: Padding(
-                padding: EdgeInsets.only(bottom: 4),
-                child: AdBanner(),
-              ),
-            ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -200,8 +165,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ]),
           _card([
-            Text('Charge alarm: ${_charge.round()}%',
-                style: _label),
+            Text('Charge alarm: ${_charge.round()}%', style: _label),
             const Text('Alerts you to unplug at this level while charging',
                 style: _hint),
             Slider(
@@ -253,7 +217,8 @@ class _HomeScreenState extends State<HomeScreen> {
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Quiet hours (silent at night)'),
-              subtitle: const Text('No sound during this window — silent alert only'),
+              subtitle:
+                  const Text('No sound during this window — silent alert only'),
               value: _quietEnabled,
               onChanged: (v) {
                 setState(() => _quietEnabled = v);
@@ -305,30 +270,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ]),
-          _card([
-            Row(
-              children: [
-                Icon(
-                  _isPro ? Icons.workspace_premium : Icons.volunteer_activism,
-                  color: _isPro ? Colors.amber : Colors.teal,
-                ),
-                const SizedBox(width: 8),
-                Text(_isPro ? 'Pro (ad-free)' : 'Free (ad-supported)',
-                    style: _label),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              _isPro
-                  ? 'Thanks for going Pro. Ads are disabled.'
-                  : 'The free version is supported by a single banner ad on this '
-                      'screen. Go Pro to remove it (and, in the full product, '
-                      'unlock history graphs, widgets and custom alarms).',
-              style: _hint,
-            ),
-            const SizedBox(height: 8),
-            if (!_isPro) ..._buyControls() else _proControls(),
-          ]),
           OutlinedButton(
             onPressed: () => FlutterBackgroundService().invoke('test_alarm'),
             child: const Text('Send test alarm'),
@@ -344,54 +285,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  List<Widget> _buyControls() {
-    final status = _purchases.status.value;
-    final product = _purchases.product.value;
-    final busy = status == PurchaseStatusUi.pending ||
-        status == PurchaseStatusUi.loading;
-
-    final priceLabel = product != null
-        ? 'Go Pro — ${product.price}'
-        : 'Go Pro — remove ads';
-
-    return [
-      FilledButton.icon(
-        onPressed: busy ? null : () => _purchases.buyPro(),
-        icon: busy
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.lock_open),
-        label: Text(status == PurchaseStatusUi.pending
-            ? 'Processing...'
-            : priceLabel),
-      ),
-      TextButton(
-        onPressed: busy ? null : () => _purchases.restore(),
-        child: const Text('Restore purchase'),
-      ),
-      if (status == PurchaseStatusUi.unavailable)
-        const Text(
-          'In-app billing isn\'t available on this build yet. It works once '
-          'the app is signed and uploaded to a Play testing track with the '
-          'product configured. See README.',
-          style: _hint,
-        ),
-      if (status == PurchaseStatusUi.error &&
-          _purchases.lastError.value != null)
-        Text('Error: ${_purchases.lastError.value}', style: _hint),
-    ];
-  }
-
-  Widget _proControls() {
-    return TextButton(
-      onPressed: () => _purchases.restore(),
-      child: const Text('Restore / re-check purchase'),
-    );
-  }
-
   Widget _card(List<Widget> children) => Card(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -403,3 +296,5 @@ class _HomeScreenState extends State<HomeScreen> {
   static const _label = TextStyle(fontSize: 16, fontWeight: FontWeight.w600);
   static const _hint = TextStyle(fontSize: 12, color: Colors.grey);
 }
+
+

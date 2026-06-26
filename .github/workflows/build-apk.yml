@@ -24,8 +24,6 @@ jobs:
           cp src/pubspec.yaml battery_alarm_app/pubspec.yaml
           cp src/lib/main.dart battery_alarm_app/lib/main.dart
           cp src/lib/battery_monitor_service.dart battery_alarm_app/lib/battery_monitor_service.dart
-          cp src/lib/ads.dart battery_alarm_app/lib/ads.dart
-          cp src/lib/purchase_service.dart battery_alarm_app/lib/purchase_service.dart
           mkdir -p battery_alarm_app/assets
           cp src/assets/alarm.wav battery_alarm_app/assets/alarm.wav
 
@@ -37,6 +35,17 @@ jobs:
         run: |
           # Works for both Groovy (build.gradle) and Kotlin DSL (build.gradle.kts)
           sed -i 's/flutter.minSdkVersion/23/g' battery_alarm_app/android/app/build.gradle* || true
+
+      - name: Bump Kotlin to 1.9.24 (ads plugin needs >= 1.9)
+        run: |
+          cd battery_alarm_app/android
+          # Newer template: declarative plugins block in settings.gradle (Groovy)
+          sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/' settings.gradle 2>/dev/null || true
+          # Kotlin DSL variant
+          sed -i 's/id("org.jetbrains.kotlin.android") version "[^"]*"/id("org.jetbrains.kotlin.android") version "1.9.24"/' settings.gradle.kts 2>/dev/null || true
+          # Legacy template: ext.kotlin_version in build.gradle
+          sed -i "s/ext.kotlin_version = '[^']*'/ext.kotlin_version = '1.9.24'/" build.gradle 2>/dev/null || true
+          echo "--- settings.gradle (if present) ---"; cat settings.gradle 2>/dev/null | grep -i kotlin || true
 
       - name: Get dependencies
         working-directory: battery_alarm_app
@@ -51,3 +60,5 @@ jobs:
         with:
           name: battery-alarm-apk
           path: battery_alarm_app/build/app/outputs/flutter-apk/app-debug.apk
+
+

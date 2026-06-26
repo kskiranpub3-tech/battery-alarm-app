@@ -1,0 +1,53 @@
+name: Build Battery Alarm APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Scaffold a fresh Flutter project
+        run: flutter create --org com.example battery_alarm_app
+
+      - name: Overlay our source files
+        run: |
+          cp src/pubspec.yaml battery_alarm_app/pubspec.yaml
+          cp src/lib/main.dart battery_alarm_app/lib/main.dart
+          cp src/lib/battery_monitor_service.dart battery_alarm_app/lib/battery_monitor_service.dart
+          cp src/lib/ads.dart battery_alarm_app/lib/ads.dart
+          cp src/lib/purchase_service.dart battery_alarm_app/lib/purchase_service.dart
+          mkdir -p battery_alarm_app/assets
+          cp src/assets/alarm.wav battery_alarm_app/assets/alarm.wav
+
+      - name: Patch AndroidManifest.xml with required permissions
+        run: |
+          python3 scripts/patch_manifest.py battery_alarm_app/android/app/src/main/AndroidManifest.xml
+
+      - name: Bump minSdk to 23 (required by google_mobile_ads)
+        run: |
+          # Works for both Groovy (build.gradle) and Kotlin DSL (build.gradle.kts)
+          sed -i 's/flutter.minSdkVersion/23/g' battery_alarm_app/android/app/build.gradle* || true
+
+      - name: Get dependencies
+        working-directory: battery_alarm_app
+        run: flutter pub get
+
+      - name: Build debug APK
+        working-directory: battery_alarm_app
+        run: flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: battery-alarm-apk
+          path: battery_alarm_app/build/app/outputs/flutter-apk/app-debug.apk

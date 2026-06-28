@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -108,7 +107,6 @@ void onServiceStart(ServiceInstance service) async {
   final notifications = FlutterLocalNotificationsPlugin();
   await _initNotifications(notifications);
 
-  final player = AudioPlayer();
   final battery = Battery();
   final settings = _Settings();
 
@@ -148,7 +146,7 @@ void onServiceStart(ServiceInstance service) async {
       dischargeAlertFired = false;
       if (level >= settings.charge && !chargeAlertFired) {
         chargeAlertFired = true;
-        await _alert(notifications, player, settings,
+        await _alert(notifications, settings,
             title: 'Unplug your charger',
             body: 'Battery is at $level%. Unplugging now helps battery health.');
       } else if (level < settings.charge - 3) {
@@ -158,7 +156,7 @@ void onServiceStart(ServiceInstance service) async {
       chargeAlertFired = false;
       if (level <= settings.discharge && !dischargeAlertFired) {
         dischargeAlertFired = true;
-        await _alert(notifications, player, settings,
+        await _alert(notifications, settings,
             title: 'Plug in your charger',
             body: 'Battery is at $level%. Time to charge.');
       } else if (level > settings.discharge + 3) {
@@ -191,7 +189,7 @@ void onServiceStart(ServiceInstance service) async {
   });
 
   service.on('test_alarm').listen((event) async {
-    await _alert(notifications, player, settings,
+    await _alert(notifications, settings,
         title: 'Test alarm',
         body: 'This is what a battery alarm looks and sounds like.');
   });
@@ -199,7 +197,6 @@ void onServiceStart(ServiceInstance service) async {
   service.on('stop_service').listen((event) async {
     nextCheck?.cancel();
     await stateSub.cancel();
-    await player.dispose();
     service.stopSelf();
   });
 
@@ -244,10 +241,10 @@ Future<void> _initNotifications(FlutterLocalNotificationsPlugin plugin) async {
   ));
 }
 
-/// Fires an alert respecting quiet hours and the volume-override setting.
+/// Fires an alert respecting quiet hours. The system alarm-channel notification
+/// is the sound source (reliable from a background isolate).
 Future<void> _alert(
   FlutterLocalNotificationsPlugin plugin,
-  AudioPlayer player,
   _Settings s, {
   required String title,
   required String body,
@@ -276,10 +273,8 @@ Future<void> _alert(
     return;
   }
 
-  // Non-quiet: ALWAYS ring through the system alarm channel. A max-importance
-  // notification reliably plays sound + vibrates from a background isolate,
-  // which a background AudioPlayer often does NOT. This is the guaranteed
-  // sound path.
+  // Non-quiet: ring through the system alarm channel (max importance reliably
+  // plays sound + vibrates from a background isolate).
   await plugin.show(
     id,
     title,
@@ -299,17 +294,4 @@ Future<void> _alert(
       ),
     ),
   );
-
-  // Best-effort extra: if the user wants a louder/volume-controlled tone, also
-  // try the audio player. If it stays silent in the background (common), the
-  // alarm-channel notification above has already made noise, so we're covered.
-  if (s.volumeOverride) {
-    try {
-      await player.setReleaseMode(ReleaseMode.stop);
-      await player.setVolume(s.alarmVolume.clamp(0.0, 1.0));
-      await player.play(AssetSource('alarm.wav'));
-    } catch (_) {
-      // Ignore — notification sound already fired.
-    }
-  }
 }

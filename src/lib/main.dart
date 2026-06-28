@@ -375,32 +375,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
           ]),
           _card([
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Override volume'),
-              subtitle: const Text(
-                  'Play the alarm at a fixed level, heard even on silent'),
-              value: _volumeOverride,
-              onChanged: (v) {
-                setState(() => _volumeOverride = v);
-                _commit();
-              },
-            ),
-            if (_volumeOverride) ...[
-              Text('Alarm volume: ${(_alarmVolume * 100).round()}%',
-                  style: _label),
-              Slider(
-                value: _alarmVolume,
-                min: 0.1,
-                max: 1.0,
-                divisions: 9,
-                label: '${(_alarmVolume * 100).round()}%',
-                onChanged: (v) => setState(() => _alarmVolume = v),
-                onChangeEnd: (_) => _commit(),
-              ),
-            ],
-          ]),
-          _card([
             Row(
               children: [
                 Icon(

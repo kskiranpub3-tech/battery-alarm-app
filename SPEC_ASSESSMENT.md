@@ -147,6 +147,29 @@ The most important strategic fact: **charge-limit features are now built into th
 
 ---
 
+### 4.1 Reliability gaps to close (from methodology review)
+
+A reviewed implementation sketch reinforced that the current build's biggest hole is
+**service survival**, not features. Concrete items to implement when we return to this:
+
+- **WorkManager watchdog.** A periodic background task (e.g. every 15 min, the platform
+  minimum) that checks whether the foreground service is alive and restarts it if an
+  OEM killed it. This is the real meaning of "watchdog" — the polling loop inside the
+  service is *not* a watchdog, because if the service dies the loop dies with it.
+- **Boot restart, done safely.** Restart monitoring after reboot via
+  `RECEIVE_BOOT_COMPLETED`, but **only if** the user had monitoring enabled, and respect
+  Android 15 limits on launching `specialUse` FGS from boot. Avoid blanket
+  `autoStart: true` — starting the service before notification permission is granted
+  (Android 13+) or before the user opts in is fragile and can crash.
+- **Permission/exemption ordering.** Always request `POST_NOTIFICATIONS` and guide the
+  battery-optimization exemption *before* relying on the service, not after autostart.
+- **Keep release builds signed.** CI must stay on `--debug` until signing is configured;
+  a `flutter build apk --release` without a keystore will fail the pipeline. (Tracked in
+  §10 monetization gaps.)
+- **Pin known-good toolchain.** Keep Flutter and `flutter_background_service` on the
+  versions we've stabilized (current major, not older majors); downgrading the plugin or
+  Flutter reintroduces API and Kotlin-version mismatches.
+
 ## 5. Monetization (reaffirmed)
 
 - **Free tier**: full alarm functionality + basic stats. Single non-intrusive banner on
@@ -281,6 +304,20 @@ best-in-class, close these:
 **iOS**
 - [ ] None — Android-first is the correct call
 
+### 10.1 Additional gaps (from PRD cross-check)
+- [ ] **Privacy policy + Play Data Safety form** treated as hard launch gates for *any*
+  submission (not just when ads are present) — the persistent notification and battery
+  data still require disclosure.
+- [ ] **Privacy-respecting analytics/telemetry layer.** Without it, the KPIs in §11
+  (service-kill rate by OEM, permission/exemption grant rates) can't be measured. Pick a
+  lightweight, consent-aware solution; keep Pro data minimal.
+- [ ] **Battery-data permission reality.** Charge current (mA) and temperature are simple
+  reads, but **per-app usage needs `PACKAGE_USAGE_STATS`** (a special-access permission
+  with a system-settings handoff). Plan the UX cost before scheduling that feature.
+- [ ] **Support & calibration cadence.** The incumbent's moat is years of OEM-specific
+  accuracy fixes. Define a realistic process for device-specific bug reports and
+  per-OEM calibration, or the "honest data" promise erodes on long-tail devices.
+
 ---
 
 ## 11. KPIs to instrument
@@ -305,3 +342,120 @@ best-in-class, close these:
 > **reliability the incumbents have lost, the discharge alarm the OS ignores, and an
 > honest battery-data layer** — give the core away, sell a small one-time Pro for the
 > data and delight, and keep ads a quiet floor under the free tier.
+
+---
+
+## 13. Failure scenarios & known bugs to watch
+
+Concrete ways the current build can misbehave, beyond the OEM-kill problem:
+
+1. **UI says "enabled" but service is dead.** `_monitoring` is restored from saved
+   prefs, but after a reboot or an OEM kill the actual service may be stopped. The user
+   thinks they're protected and isn't. *Mitigated now* by a live "Service: running/
+   stopped" indicator + a warning + a Restart button (§ service-health card).
+2. **No restart after reboot.** `autoStart` is off, so monitoring silently stops after a
+   restart. Needs `RECEIVE_BOOT_COMPLETED` to relaunch *only if* the user had it on.
+3. **Doze mode defers the polling timer.** Without a battery-optimization exemption, the
+   periodic check can be delayed for long stretches, so a charge alarm can fire late or
+   not until the screen wakes. The "Allow background" button now requests the exemption.
+4. **Late low-battery alarm.** On battery, checks run every 15–60 min; a fast drain can
+   pass the threshold and only alert at the next tick (e.g. at 14% instead of 20%).
+   Acceptable, but consider a tighter interval when already near the threshold.
+5. **Background audio is unreliable.** The custom-tone path often stays silent in the
+   service isolate. *Fixed* by making the max-priority notification the guaranteed sound
+   and treating the tone as a best-effort extra.
+6. **Quiet-hours test confusion.** A test alarm during quiet hours is silent by design —
+   a user testing at night hears nothing and assumes it's broken. Consider making the
+   test always audible.
+7. **Notification stacking.** Each alarm uses a unique ID, so repeated alerts pile up.
+   Consider a fixed ID per alarm type so a new one replaces the old.
+8. **Full-screen intent may not trigger.** Android 14+ gates `USE_FULL_SCREEN_INTENT`;
+   without declaring/justifying it, the lock-screen full-screen alarm silently degrades
+   to a normal notification. Add the permission or stop relying on full-screen.
+9. **Rapid charge/discharge events** can overlap async checks (the state-change listener
+   plus the self-rescheduling timer). Add a re-entrancy guard so two checks can't run at
+   once.
+10. **Permission denial.** If the user denies notifications, the FGS notification and
+    alarms won't show. Detect denial and explain, rather than failing silently.
+
+## 14. OEM power-saving reality (top 5 brands)
+
+The biggest functional risk is **vendor battery managers**, which are stricter than
+stock Android's Doze and can kill a foreground service even when it's "exempt." Per
+dontkillmyapp.com and field guides, ranked roughly worst-to-mildest among major brands:
+
+- **Xiaomi (MIUI/HyperOS):** among the most aggressive; background work "simply does not
+  work right" by default. Needs a separate **Autostart** toggle (in the Security app),
+  plus battery-saver exemption; settings can reset after system updates.
+- **OnePlus (OxygenOS):** historically one of the most severe limiters — "deep
+  optimization," "sleep standby optimization," and adaptive battery all restrict the
+  service; settings can reset on firmware updates, and locking the app in Recents helps
+  but isn't 100%.
+- **Oppo/Realme (ColorOS):** kills background processes aggressively; needs Autostart +
+  manual background-activity allowance.
+- **Vivo (Funtouch/OriginOS):** similar aggressive limits; Autostart is a separate,
+  easy-to-miss toggle.
+- **Samsung (One UI):** milder than the above but still puts unused apps to "sleep";
+  needs the app marked as **not** sleeping/deep-sleeping and exempt from battery
+  optimization; settings may need redoing after major updates.
+- *(Honorable mention: Huawei/HMD are extreme but smaller share in many markets.)*
+
+**Implication for the app:** an in-app reliability flow is essential — request the
+battery-optimization exemption (done), link out to dontkillmyapp.com per device (done in
+the card), and tell users plainly that on these brands they must also enable Autostart
+and lock the app in Recents. Even then, expect occasional kills and surface a Restart
+control (done). A WorkManager watchdog is still the missing automated backstop.
+
+## 15. Competitor gap analysis — "Battery Charge Limit & Alarm" (org.gouz.batterycharge)
+
+A close competitor (on Play since Feb 2025, ~13.9 MB, written in native code). Mapping
+its advertised features against the current app:
+
+| Competitor feature | Status in our app | Gap to close |
+|---|---|---|
+| Customizable charge-limit alarm | ✅ Have | — |
+| Low-battery alert **without manually starting** | ⚠️ Partial — ours needs monitoring toggled on | Add opt-in auto-start so the discharge alarm works out of the box |
+| Continuous background monitoring | ✅ Have (reliability WIP) | Watchdog + boot restart |
+| **Full battery status: level, temperature, voltage, current** | ❌ Missing | Add a real-time status screen (temp/voltage/current are simple reads) |
+| **Charging statistics + health score** | ❌ Missing | Session logging + history; show **calibrated estimates**, not a single smoothed "health score" |
+| **Snooze** the alarm | ❌ Missing | Add snooze action on the alarm notification |
+| Customizable sound & vibration per alarm | ⚠️ Partial (volume, quiet hours) | Add sound picker + vibration pattern choice |
+
+**Net new gaps surfaced** (add to §10): real-time battery status view (temperature,
+voltage, current), **snooze**, custom alarm-sound selection, and an opt-in auto-monitor
+mode. Temperature/voltage/current are quick wins with high perceived value.
+
+**Permissions the competitor uses that are worth selectively adopting:**
+- **Access Do Not Disturb** — lets alarms sound through DND (genuinely useful for a
+  wake-me alarm; weigh against the consent/permission friction).
+- **Full-screen intent on locked device** — for a true alarm screen (needs the
+  `USE_FULL_SCREEN_INTENT` declaration we currently lack).
+- **Schedule exact alarms** — only needed if we add snooze/scheduled re-alerts.
+- It also ships **ads (Advertising ID, AdServices APIs)** and **Play Billing** — i.e. the
+  same freemium+ads model the spec recommends.
+
+## 16. App size & how to stay compact
+
+The competitor is **~13.9 MB, native**. A Flutter app carries a baseline engine cost
+(~5–7 MB) that native avoids, so matching it exactly is hard — but a well-built release
+gets competitive. Our current artifact is a **universal debug APK**, which is the
+*largest* possible form. To shrink:
+
+1. **Ship release, not debug** — debug bundles extra tooling; release is much smaller.
+2. **Split per ABI** (`flutter build apk --split-per-abi`) — produces ~per-architecture
+   APKs (arm64 ~8–11 MB) instead of one fat universal (~20 MB+). Or ship an **app bundle
+   (.aab)** so Play delivers a per-device slice automatically.
+3. **Obfuscate + split debug info** (`--obfuscate --split-debug-info=...`) — strips
+   symbols from the binary.
+4. **Enable R8 + resource shrinking** in release (`minifyEnabled`, `shrinkResources`).
+5. **Drop unused weight:** removing `audioplayers` + `alarm.wav` (now that the
+   notification is the sound source) removes an audio engine and an asset — a real,
+   easy size win, at the cost of the programmatic-volume feature.
+6. **Avoid heavy plugins** where a platform channel would do; each native plugin adds
+   size.
+
+Realistic target: a per-ABI **release** build in the ~9–12 MB range — close to the
+competitor, without giving up Flutter's development speed.
+
+> Note: items in §13–16 are analysis for later. The shipped change this round is the
+> in-app **service-health / restart card** plus battery-optimization shortcuts.

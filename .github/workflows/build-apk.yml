@@ -24,8 +24,12 @@ jobs:
           cp src/pubspec.yaml battery_alarm_app/pubspec.yaml
           cp src/lib/main.dart battery_alarm_app/lib/main.dart
           cp src/lib/battery_monitor_service.dart battery_alarm_app/lib/battery_monitor_service.dart
+          cp src/lib/battery_info.dart battery_alarm_app/lib/battery_info.dart
           mkdir -p battery_alarm_app/assets
           cp src/assets/alarm.wav battery_alarm_app/assets/alarm.wav
+          # Overlay the native MainActivity (adds the battery_info channel).
+          cp src/android/MainActivity.kt \
+            battery_alarm_app/android/app/src/main/kotlin/com/example/battery_alarm_app/MainActivity.kt
 
       - name: Patch AndroidManifest.xml with required permissions
         run: |
@@ -60,5 +64,3 @@ jobs:
         with:
           name: battery-alarm-apk
           path: battery_alarm_app/build/app/outputs/flutter-apk/app-debug.apk
-
-

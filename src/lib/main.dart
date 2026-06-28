@@ -1,13 +1,36 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'battery_info.dart';
 import 'battery_monitor_service.dart';
+
+final FlutterLocalNotificationsPlugin _uiNotifications =
+    FlutterLocalNotificationsPlugin();
+
+Future<void> _initUiNotifications() async {
+  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+  await _uiNotifications
+      .initialize(const InitializationSettings(android: androidInit));
+  final android = _uiNotifications.resolvePlatformSpecificImplementation<
+      AndroidFlutterLocalNotificationsPlugin>();
+  await android?.createNotificationChannel(const AndroidNotificationChannel(
+    'battery_alarm_channel',
+    'Battery Alarms',
+    importance: Importance.max,
+    playSound: true,
+    enableVibration: true,
+  ));
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeBackgroundService();
+  await _initUiNotifications();
   runApp(const BatteryAlarmApp());
 }
 
@@ -45,12 +68,66 @@ class _HomeScreenState extends State<HomeScreen> {
   TimeOfDay _quietEnd = const TimeOfDay(hour: 7, minute: 0);
   bool _volumeOverride = true;
   double _alarmVolume = 0.8;
+  bool _serviceRunning = false;
   bool _loaded = false;
+  BatteryInfo? _info;
+  Timer? _infoTimer;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _refreshServiceStatus();
+    _pollInfo();
+    _infoTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) => _pollInfo());
+  }
+
+  @override
+  void dispose() {
+    _infoTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _pollInfo() async {
+    final info = await readBatteryInfo();
+    if (mounted) setState(() => _info = info);
+  }
+
+  Future<void> _refreshServiceStatus() async {
+    final running = await FlutterBackgroundService().isRunning();
+    if (mounted) setState(() => _serviceRunning = running);
+  }
+
+  Future<void> _restartService() async {
+    final service = FlutterBackgroundService();
+    try {
+      if (await service.isRunning()) {
+        service.invoke('stop_service');
+        await Future.delayed(const Duration(milliseconds: 800));
+      }
+      await Permission.notification.request();
+      await service.startService();
+      await Future.delayed(const Duration(milliseconds: 800));
+      _pushSettings();
+      setState(() => _monitoring = true);
+      await _save();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Restart failed: $e')));
+      }
+    }
+    await _refreshServiceStatus();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_serviceRunning
+              ? 'Service restarted and running'
+              : 'Service did not start — check battery settings below'),
+        ),
+      );
+    }
   }
 
   Future<void> _load() async {
@@ -111,20 +188,72 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _toggleMonitoring(bool value) async {
+    // Persist intent FIRST, so the service (which reads this flag on start, and
+    // self-stops if it's false on boot) sees the correct value.
+    setState(() => _monitoring = value);
+    await _save();
     if (value) {
       await Permission.notification.request();
     }
-    setState(() => _monitoring = value);
-    await _save();
     final service = FlutterBackgroundService();
-    if (value) {
-      if (!await service.isRunning()) {
-        await service.startService();
+    try {
+      if (value) {
+        if (!await service.isRunning()) {
+          await service.startService();
+        }
+        await Future.delayed(const Duration(milliseconds: 600));
+        _pushSettings();
+      } else {
+        service.invoke('stop_service');
       }
-      await Future.delayed(const Duration(milliseconds: 600));
-      _pushSettings();
-    } else {
-      service.invoke('stop_service');
+      await _refreshServiceStatus();
+    } catch (e) {
+      setState(() => _monitoring = false);
+      await _save();
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Could not start monitoring'),
+            content: Text('$e'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _sendTestAlarm() async {
+    // Fire directly from the UI isolate so it works regardless of whether the
+    // background service is running, and is always audible (not silenced by
+    // quiet hours, which only applies to real monitoring alarms).
+    await Permission.notification.request();
+    await _uiNotifications.show(
+      99,
+      'Test alarm',
+      'This is what a battery alarm sounds like.',
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'battery_alarm_channel',
+          'Battery Alarms',
+          importance: Importance.max,
+          priority: Priority.max,
+          playSound: true,
+          enableVibration: true,
+          category: AndroidNotificationCategory.alarm,
+          autoCancel: true,
+        ),
+      ),
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Test alarm sent')),
+      );
     }
   }
 
@@ -191,6 +320,7 @@ class _HomeScreenState extends State<HomeScreen> {
               onChangeEnd: (_) => _commit(),
             ),
           ]),
+          _buildStatusCard(),
           _card([
             const Text('Battery-saving check interval', style: _label),
             const Text(
@@ -270,8 +400,75 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ]),
+          _card([
+            Row(
+              children: [
+                Icon(
+                  _serviceRunning ? Icons.check_circle : Icons.cancel,
+                  color: _serviceRunning ? Colors.green : Colors.redAccent,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _serviceRunning ? 'Service: running' : 'Service: stopped',
+                  style: _label,
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  tooltip: 'Refresh status',
+                  onPressed: _refreshServiceStatus,
+                ),
+              ],
+            ),
+            if (_monitoring && !_serviceRunning)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Monitoring is enabled but the background service is not '
+                  'running — your phone may have stopped it. Restart it and '
+                  'make sure battery optimization is disabled below.',
+                  style: TextStyle(fontSize: 12, color: Colors.orangeAccent),
+                ),
+              ),
+            const Text(
+              'If alarms stop firing, restart the service and check the '
+              'reliability settings below.',
+              style: _hint,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                FilledButton.tonalIcon(
+                  onPressed: _restartService,
+                  icon: const Icon(Icons.restart_alt),
+                  label: const Text('Restart service'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () =>
+                      Permission.ignoreBatteryOptimizations.request(),
+                  icon: const Icon(Icons.battery_saver),
+                  label: const Text('Allow background'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: openAppSettings,
+                  icon: const Icon(Icons.settings),
+                  label: const Text('App settings'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Some brands (Xiaomi, OnePlus, Samsung, Oppo, Vivo) need extra '
+              'steps like enabling Autostart and locking the app in Recents. '
+              'See dontkillmyapp.com for your exact phone.',
+              style: _hint,
+            ),
+          ]),
           OutlinedButton(
-            onPressed: () => FlutterBackgroundService().invoke('test_alarm'),
+            onPressed: _sendTestAlarm,
             child: const Text('Send test alarm'),
           ),
           const SizedBox(height: 12),
@@ -279,6 +476,105 @@ class _HomeScreenState extends State<HomeScreen> {
             'For reliable background operation, set this app to Unrestricted '
             'battery usage: Settings > Apps > Battery Alarm > Battery.',
             style: _hint,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusCard() {
+    final info = _info;
+    String fmt(double? v, String unit, {int dp = 1}) =>
+        v == null ? '—' : '${v.toStringAsFixed(dp)}$unit';
+
+    final capped = info?.chargingLikelyCapped ?? false;
+
+    return _card([
+      Row(
+        children: [
+          const Text('Battery status', style: _label),
+          const Spacer(),
+          IconButton(
+            icon: const Icon(Icons.info_outline, size: 20),
+            tooltip: 'About native limits',
+            onPressed: _showLimitsInfo,
+          ),
+        ],
+      ),
+      if (info == null)
+        const Text(
+          'Live readings are not available on this device.',
+          style: _hint,
+        )
+      else
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _stat('Temp', fmt(info.temperatureC, '°C')),
+            _stat('Voltage', fmt(info.voltageV, ' V', dp: 2)),
+            _stat(
+                'Current',
+                info.currentMa == null
+                    ? '—'
+                    : '${info.currentMa!.abs().toStringAsFixed(0)} mA'),
+            _stat('Health', info.healthText),
+          ],
+        ),
+      if (capped) ...[
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.orange.withOpacity(0.15),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Text(
+            '⚠️ Charging looks paused while plugged in. A built-in battery '
+            'protection / charge-limit feature, or a weak cable or charger, may '
+            'be capping it. If your charge alarm is set above this level, it '
+            'may not fire. Tap ⓘ to learn more.',
+            style: TextStyle(fontSize: 12, color: Colors.orangeAccent),
+          ),
+        ),
+      ],
+    ]);
+  }
+
+  Widget _stat(String label, String value) => Column(
+        children: [
+          Text(value,
+              style:
+                  const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          Text(label, style: _hint),
+        ],
+      );
+
+  void _showLimitsInfo() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Native features & cables'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'Your phone and accessories can limit what this app can do:\n\n'
+            '• Built-in charge limits / battery protection (e.g. "limit to '
+            '80%", adaptive charging) make the phone stop charging at a set '
+            'level. If that cap is below your charge alarm, the alarm may '
+            'never trigger — the phone simply won\'t reach your %.\n\n'
+            '• These native caps can themselves be inconsistent (some phones '
+            'still charge to 100% when warm, or periodically for calibration).\n\n'
+            '• A weak or damaged cable/charger, or a dirty port, can slow or '
+            'pause charging, which also affects when alarms fire.\n\n'
+            'This app reads battery state but cannot turn these native features '
+            'on or off. If alarms don\'t behave as expected, check your phone\'s '
+            'battery/charging settings and try a different cable.',
+            style: TextStyle(fontSize: 13),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Got it'),
           ),
         ],
       ),
@@ -296,5 +592,3 @@ class _HomeScreenState extends State<HomeScreen> {
   static const _label = TextStyle(fontSize: 16, fontWeight: FontWeight.w600);
   static const _hint = TextStyle(fontSize: 12, color: Colors.grey);
 }
-
-

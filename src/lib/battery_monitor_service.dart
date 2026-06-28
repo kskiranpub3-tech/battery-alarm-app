@@ -88,6 +88,9 @@ Future<void> initializeBackgroundService() async {
     androidConfiguration: AndroidConfiguration(
       onStart: onServiceStart,
       autoStart: false,
+      // Restart monitoring after a device reboot (the service itself stops
+      // again on boot if the user had monitoring turned off — see onServiceStart).
+      autoStartOnBoot: true,
       isForegroundMode: true,
       notificationChannelId: _monitorChannelId,
       initialNotificationTitle: 'Battery Alarm',
@@ -112,6 +115,15 @@ void onServiceStart(ServiceInstance service) async {
   final prefs = await SharedPreferences.getInstance();
   settings.loadFrom(prefs);
 
+  // If the service was started by the boot receiver but the user had monitoring
+  // turned off, stop immediately so we don't run uninvited. (When the user
+  // enables monitoring, the flag is saved BEFORE the service starts, so this
+  // check passes for a deliberate start.)
+  final monitoringEnabled = prefs.getBool(kMonitoringEnabledKey) ?? false;
+  if (!monitoringEnabled) {
+    service.stopSelf();
+    return;
+  }
   // Hysteresis flags so we alert once per crossing, not every poll.
   bool chargeAlertFired = false;
   bool dischargeAlertFired = false;
@@ -264,55 +276,40 @@ Future<void> _alert(
     return;
   }
 
+  // Non-quiet: ALWAYS ring through the system alarm channel. A max-importance
+  // notification reliably plays sound + vibrates from a background isolate,
+  // which a background AudioPlayer often does NOT. This is the guaranteed
+  // sound path.
+  await plugin.show(
+    id,
+    title,
+    body,
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        _alarmChannelId,
+        _alarmChannelName,
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
+        fullScreenIntent: true,
+        category: AndroidNotificationCategory.alarm,
+        autoCancel: true,
+        visibility: NotificationVisibility.public,
+      ),
+    ),
+  );
+
+  // Best-effort extra: if the user wants a louder/volume-controlled tone, also
+  // try the audio player. If it stays silent in the background (common), the
+  // alarm-channel notification above has already made noise, so we're covered.
   if (s.volumeOverride) {
-    // Play our own tone at the user's chosen volume. Media playback is heard
-    // even when the ringer is silenced, and setVolume scales loudness 0..1.
     try {
       await player.setReleaseMode(ReleaseMode.stop);
       await player.setVolume(s.alarmVolume.clamp(0.0, 1.0));
       await player.play(AssetSource('alarm.wav'));
     } catch (_) {
-      // If playback fails for any reason, the notification below still alerts.
+      // Ignore — notification sound already fired.
     }
-    // Visual notification without its own sound (we already played one).
-    await plugin.show(
-      id,
-      title,
-      body,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          _silentChannelId,
-          _silentChannelName,
-          importance: Importance.high,
-          priority: Priority.high,
-          playSound: false,
-          enableVibration: true,
-          autoCancel: true,
-          category: AndroidNotificationCategory.alarm,
-          visibility: NotificationVisibility.public,
-        ),
-      ),
-    );
-  } else {
-    // Use the system alarm channel's own sound at the system volume.
-    await plugin.show(
-      id,
-      title,
-      body,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          _alarmChannelId,
-          _alarmChannelName,
-          importance: Importance.max,
-          priority: Priority.max,
-          playSound: true,
-          enableVibration: true,
-          fullScreenIntent: true,
-          category: AndroidNotificationCategory.alarm,
-          autoCancel: true,
-          visibility: NotificationVisibility.public,
-        ),
-      ),
-    );
   }
 }

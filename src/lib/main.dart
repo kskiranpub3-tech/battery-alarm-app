@@ -19,18 +19,29 @@ Future<void> _initUiNotifications() async {
   final android = _uiNotifications.resolvePlatformSpecificImplementation<
       AndroidFlutterLocalNotificationsPlugin>();
   await android?.createNotificationChannel(const AndroidNotificationChannel(
-    'battery_alarm_channel',
+    'battery_alarm_v2',
     'Battery Alarms',
     importance: Importance.max,
     playSound: true,
     enableVibration: true,
+    audioAttributesUsage: AudioAttributesUsage.alarm,
   ));
 }
 
+String? _startupError;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await initializeBackgroundService();
-  await _initUiNotifications();
+  try {
+    await initializeBackgroundService();
+  } catch (e) {
+    _startupError = 'Service init failed: $e';
+  }
+  try {
+    await _initUiNotifications();
+  } catch (e) {
+    _startupError = '${_startupError ?? ''}\nNotifications init failed: $e';
+  }
   runApp(const BatteryAlarmApp());
 }
 
@@ -102,6 +113,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _restartService() async {
     final service = FlutterBackgroundService();
     try {
+      // Persist intent before starting so the service stays up.
+      setState(() => _monitoring = true);
+      await _save();
       if (await service.isRunning()) {
         service.invoke('stop_service');
         await Future.delayed(const Duration(milliseconds: 800));
@@ -110,8 +124,6 @@ class _HomeScreenState extends State<HomeScreen> {
       await service.startService();
       await Future.delayed(const Duration(milliseconds: 800));
       _pushSettings();
-      setState(() => _monitoring = true);
-      await _save();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -239,7 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
       'This is what a battery alarm sounds like.',
       const NotificationDetails(
         android: AndroidNotificationDetails(
-          'battery_alarm_channel',
+          'battery_alarm_v2',
           'Battery Alarms',
           importance: Importance.max,
           priority: Priority.max,
@@ -284,6 +296,17 @@ class _HomeScreenState extends State<HomeScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (_startupError != null)
+            Card(
+              color: Colors.red.shade900,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  'Startup problem:\n$_startupError',
+                  style: const TextStyle(fontSize: 12, color: Colors.white),
+                ),
+              ),
+            ),
           _card([
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

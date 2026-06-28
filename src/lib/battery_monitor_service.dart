@@ -21,7 +21,9 @@ const String kAlarmVolumeKey = 'alarm_volume';
 
 const String _monitorChannelId = 'battery_monitor_channel';
 const String _monitorChannelName = 'Battery Monitor';
-const String _alarmChannelId = 'battery_alarm_channel';
+// v2: new id so the alarm-stream audio setting takes effect on updated installs
+// (channel settings are locked once a channel id is first created).
+const String _alarmChannelId = 'battery_alarm_v2';
 const String _alarmChannelName = 'Battery Alarms';
 const String _silentChannelId = 'battery_silent_channel';
 const String _silentChannelName = 'Battery Alarms (silent)';
@@ -113,15 +115,6 @@ void onServiceStart(ServiceInstance service) async {
   final prefs = await SharedPreferences.getInstance();
   settings.loadFrom(prefs);
 
-  // If the service was started by the boot receiver but the user had monitoring
-  // turned off, stop immediately so we don't run uninvited. (When the user
-  // enables monitoring, the flag is saved BEFORE the service starts, so this
-  // check passes for a deliberate start.)
-  final monitoringEnabled = prefs.getBool(kMonitoringEnabledKey) ?? false;
-  if (!monitoringEnabled) {
-    service.stopSelf();
-    return;
-  }
   // Hysteresis flags so we alert once per crossing, not every poll.
   bool chargeAlertFired = false;
   bool dischargeAlertFired = false;
@@ -230,6 +223,9 @@ Future<void> _initNotifications(FlutterLocalNotificationsPlugin plugin) async {
     importance: Importance.max,
     playSound: true,
     enableVibration: true,
+    // Play on the ALARM stream so it's audible even when the ringer is on
+    // vibrate/silent (and uses the alarm volume, not the ring volume).
+    audioAttributesUsage: AudioAttributesUsage.alarm,
   ));
   await android?.createNotificationChannel(const AndroidNotificationChannel(
     _silentChannelId,

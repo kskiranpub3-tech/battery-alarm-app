@@ -25,9 +25,11 @@ jobs:
           cp src/lib/main.dart battery_alarm_app/lib/main.dart
           cp src/lib/battery_monitor_service.dart battery_alarm_app/lib/battery_monitor_service.dart
           cp src/lib/battery_info.dart battery_alarm_app/lib/battery_info.dart
-          # Overlay the native MainActivity (adds the battery_info channel).
-          cp src/android/MainActivity.kt \
-            battery_alarm_app/android/app/src/main/kotlin/com/example/battery_alarm_app/MainActivity.kt
+          # NOTE: native MainActivity overlay temporarily disabled while we
+          # confirm the launch crash. battery_info.dart falls back to "not
+          # available" without it, so the app still runs.
+          # cp src/android/MainActivity.kt \
+          #   battery_alarm_app/android/app/src/main/kotlin/com/example/battery_alarm_app/MainActivity.kt
 
       - name: Patch AndroidManifest.xml with required permissions
         run: |

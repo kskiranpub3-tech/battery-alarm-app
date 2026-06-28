@@ -23,7 +23,6 @@ SERVICE_OVERRIDE = (
     '<service\n'
     '            android:name="id.flutter.flutter_background_service.BackgroundService"\n'
     '            android:foregroundServiceType="specialUse"\n'
-    '            android:exported="false"\n'
     '            tools:replace="android:foregroundServiceType">\n'
     '            <property\n'
     '                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"\n'

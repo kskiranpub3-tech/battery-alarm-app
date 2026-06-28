@@ -35,10 +35,12 @@ jobs:
         run: |
           python3 scripts/patch_manifest.py battery_alarm_app/android/app/src/main/AndroidManifest.xml
 
-      - name: Bump minSdk to 23 (required by google_mobile_ads)
+      - name: Bump minSdk to 23 and compileSdk to 35
         run: |
           # Works for both Groovy (build.gradle) and Kotlin DSL (build.gradle.kts)
           sed -i 's/flutter.minSdkVersion/23/g' battery_alarm_app/android/app/build.gradle* || true
+          # audioplayers requires compiling against Android SDK 35
+          sed -i 's/flutter.compileSdkVersion/35/g' battery_alarm_app/android/app/build.gradle* || true
 
       - name: Bump Kotlin to 1.9.24 (ads plugin needs >= 1.9)
         run: |

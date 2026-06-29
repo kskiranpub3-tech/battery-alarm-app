@@ -18,13 +18,94 @@ const String kQuietEndHourKey = 'quiet_end_hour';
 const String kQuietEndMinKey = 'quiet_end_min';
 const String kVolumeOverrideKey = 'volume_override';
 const String kAlarmVolumeKey = 'alarm_volume';
+const String kAlarmSoundKey = 'alarm_sound';
+
+/// A selectable alarm sound. Each option uses its OWN notification channel,
+/// because Android locks a channel's sound at the moment it is first created —
+/// you cannot change it afterwards. So to offer several sounds we pre-create one
+/// channel per option and simply post the alarm on whichever channel the user
+/// picked. The sounds are the phone's own built-in system sounds (no bundled
+/// audio), played on the ALARM stream so they are loud and audible even when the
+/// ringer is on silent/vibrate.
+class AlarmSoundOption {
+  final String id;
+  final String label;
+  final String channelId;
+  final AndroidNotificationSound? sound; // null => channel default beep
+
+  const AlarmSoundOption({
+    required this.id,
+    required this.label,
+    required this.channelId,
+    this.sound,
+  });
+
+  String get channelName => 'Battery Alarms — $label';
+}
+
+/// The standard Android system-sound content URIs (Settings.System defaults).
+const List<AlarmSoundOption> kAlarmSounds = [
+  AlarmSoundOption(
+    id: 'alarm',
+    label: 'Alarm (loudest)',
+    channelId: 'battery_alarm_snd_alarm',
+    sound: UriAndroidNotificationSound('content://settings/system/alarm_alert'),
+  ),
+  AlarmSoundOption(
+    id: 'ringtone',
+    label: 'Ringtone',
+    channelId: 'battery_alarm_snd_ringtone',
+    sound: UriAndroidNotificationSound('content://settings/system/ringtone'),
+  ),
+  AlarmSoundOption(
+    id: 'notification',
+    label: 'Notification tone',
+    channelId: 'battery_alarm_snd_notif',
+    sound: UriAndroidNotificationSound(
+        'content://settings/system/notification_sound'),
+  ),
+  AlarmSoundOption(
+    id: 'default',
+    label: 'Default beep',
+    channelId: _alarmChannelId, // back-compat: reuse battery_alarm_v2
+  ),
+];
+
+/// Out of the box, use the (loud) alarm tone — that is what users expect from a
+/// "battery alarm" and what they have been asking for.
+const String kDefaultAlarmSoundId = 'alarm';
+
+AlarmSoundOption alarmSoundById(String? id) => kAlarmSounds.firstWhere(
+      (o) => o.id == id,
+      orElse: () =>
+          kAlarmSounds.firstWhere((o) => o.id == kDefaultAlarmSoundId),
+    );
+
+/// Creates one max-importance, alarm-stream channel per selectable sound. Safe
+/// to call repeatedly; re-creating an existing channel id is a no-op on Android.
+Future<void> createAlarmSoundChannels(
+    AndroidFlutterLocalNotificationsPlugin? android) async {
+  for (final o in kAlarmSounds) {
+    await android?.createNotificationChannel(AndroidNotificationChannel(
+      o.channelId,
+      o.channelName,
+      description: 'Charge/discharge alarms (${o.label})',
+      importance: Importance.max,
+      playSound: true,
+      sound: o.sound,
+      enableVibration: true,
+      // Play on the ALARM stream so it's audible even on vibrate/silent and
+      // uses the alarm volume rather than the (often low) notification volume.
+      audioAttributesUsage: AudioAttributesUsage.alarm,
+    ));
+  }
+}
 
 const String _monitorChannelId = 'battery_monitor_channel';
 const String _monitorChannelName = 'Battery Monitor';
 // v2: new id so the alarm-stream audio setting takes effect on updated installs
 // (channel settings are locked once a channel id is first created).
 const String _alarmChannelId = 'battery_alarm_v2';
-const String _alarmChannelName = 'Battery Alarms';
 const String _silentChannelId = 'battery_silent_channel';
 const String _silentChannelName = 'Battery Alarms (silent)';
 
@@ -44,6 +125,7 @@ class _Settings {
   int quietEndMin = 0;
   bool volumeOverride = true;
   double alarmVolume = 0.8;
+  String alarmSoundId = kDefaultAlarmSoundId;
 
   void loadFrom(SharedPreferences p) {
     charge = p.getDouble(kChargeThresholdKey) ?? charge;
@@ -56,6 +138,7 @@ class _Settings {
     quietEndMin = p.getInt(kQuietEndMinKey) ?? quietEndMin;
     volumeOverride = p.getBool(kVolumeOverrideKey) ?? volumeOverride;
     alarmVolume = p.getDouble(kAlarmVolumeKey) ?? alarmVolume;
+    alarmSoundId = p.getString(kAlarmSoundKey) ?? alarmSoundId;
   }
 
   void applyEvent(Map<String, dynamic> e) {
@@ -69,6 +152,7 @@ class _Settings {
     quietEndMin = (e['quietEndMin'] as num?)?.toInt() ?? quietEndMin;
     volumeOverride = e['volumeOverride'] as bool? ?? volumeOverride;
     alarmVolume = (e['alarmVolume'] as num?)?.toDouble() ?? alarmVolume;
+    alarmSoundId = e['alarmSound'] as String? ?? alarmSoundId;
   }
 
   bool get inQuietHours {
@@ -216,17 +300,9 @@ Future<void> _initNotifications(FlutterLocalNotificationsPlugin plugin) async {
     description: 'Persistent notification while monitoring battery',
     importance: Importance.low,
   ));
-  await android?.createNotificationChannel(const AndroidNotificationChannel(
-    _alarmChannelId,
-    _alarmChannelName,
-    description: 'Charge/discharge alarms',
-    importance: Importance.max,
-    playSound: true,
-    enableVibration: true,
-    // Play on the ALARM stream so it's audible even when the ringer is on
-    // vibrate/silent (and uses the alarm volume, not the ring volume).
-    audioAttributesUsage: AudioAttributesUsage.alarm,
-  ));
+  // One channel per selectable alarm sound (includes the legacy
+  // _alarmChannelId as the "Default beep" option).
+  await createAlarmSoundChannels(android);
   await android?.createNotificationChannel(const AndroidNotificationChannel(
     _silentChannelId,
     _silentChannelName,
@@ -269,20 +345,23 @@ Future<void> _alert(
     return;
   }
 
-  // Non-quiet: ring through the system alarm channel (max importance reliably
-  // plays sound + vibrates from a background isolate).
+  // Non-quiet: ring through the user-selected alarm-sound channel (max
+  // importance reliably plays sound + vibrates from a background isolate).
+  final opt = alarmSoundById(s.alarmSoundId);
   await plugin.show(
     id,
     title,
     body,
-    const NotificationDetails(
+    NotificationDetails(
       android: AndroidNotificationDetails(
-        _alarmChannelId,
-        _alarmChannelName,
+        opt.channelId,
+        opt.channelName,
         importance: Importance.max,
         priority: Priority.max,
         playSound: true,
+        sound: opt.sound,
         enableVibration: true,
+        audioAttributesUsage: AudioAttributesUsage.alarm,
         fullScreenIntent: true,
         category: AndroidNotificationCategory.alarm,
         autoCancel: true,

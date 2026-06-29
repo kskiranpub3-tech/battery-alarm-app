@@ -18,14 +18,9 @@ Future<void> _initUiNotifications() async {
       .initialize(const InitializationSettings(android: androidInit));
   final android = _uiNotifications.resolvePlatformSpecificImplementation<
       AndroidFlutterLocalNotificationsPlugin>();
-  await android?.createNotificationChannel(const AndroidNotificationChannel(
-    'battery_alarm_v2',
-    'Battery Alarms',
-    importance: Importance.max,
-    playSound: true,
-    enableVibration: true,
-    audioAttributesUsage: AudioAttributesUsage.alarm,
-  ));
+  // One channel per selectable alarm sound, so the test alarm and the real
+  // alarms can ring with whichever sound the user picked.
+  await createAlarmSoundChannels(android);
 }
 
 String? _startupError;
@@ -79,6 +74,7 @@ class _HomeScreenState extends State<HomeScreen> {
   TimeOfDay _quietEnd = const TimeOfDay(hour: 7, minute: 0);
   bool _volumeOverride = true;
   double _alarmVolume = 0.8;
+  String _alarmSoundId = kDefaultAlarmSoundId;
   bool _serviceRunning = false;
   bool _loaded = false;
   BatteryInfo? _info;
@@ -160,6 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       _volumeOverride = p.getBool(kVolumeOverrideKey) ?? true;
       _alarmVolume = p.getDouble(kAlarmVolumeKey) ?? 0.8;
+      _alarmSoundId = p.getString(kAlarmSoundKey) ?? kDefaultAlarmSoundId;
       _loaded = true;
     });
   }
@@ -177,6 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await p.setInt(kQuietEndMinKey, _quietEnd.minute);
     await p.setBool(kVolumeOverrideKey, _volumeOverride);
     await p.setDouble(kAlarmVolumeKey, _alarmVolume);
+    await p.setString(kAlarmSoundKey, _alarmSoundId);
   }
 
   void _pushSettings() {
@@ -191,6 +189,7 @@ class _HomeScreenState extends State<HomeScreen> {
       'quietEndMin': _quietEnd.minute,
       'volumeOverride': _volumeOverride,
       'alarmVolume': _alarmVolume,
+      'alarmSound': _alarmSoundId,
     });
   }
 
@@ -245,18 +244,21 @@ class _HomeScreenState extends State<HomeScreen> {
     // background service is running, and is always audible (not silenced by
     // quiet hours, which only applies to real monitoring alarms).
     await Permission.notification.request();
+    final opt = alarmSoundById(_alarmSoundId);
     await _uiNotifications.show(
       99,
       'Test alarm',
-      'This is what a battery alarm sounds like.',
-      const NotificationDetails(
+      'This is what a battery alarm sounds like (${opt.label}).',
+      NotificationDetails(
         android: AndroidNotificationDetails(
-          'battery_alarm_v2',
-          'Battery Alarms',
+          opt.channelId,
+          opt.channelName,
           importance: Importance.max,
           priority: Priority.max,
           playSound: true,
+          sound: opt.sound,
           enableVibration: true,
+          audioAttributesUsage: AudioAttributesUsage.alarm,
           category: AndroidNotificationCategory.alarm,
           autoCancel: true,
         ),
@@ -264,7 +266,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Test alarm sent')),
+        SnackBar(content: Text('Test alarm sent (${opt.label})')),
       );
     }
   }
@@ -398,6 +400,42 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
           ]),
           _card([
+            const Text('Alarm sound', style: _label),
+            const Text(
+              'Pick a louder system sound. "Alarm" uses your phone\'s own alarm '
+              'tone played at the alarm volume, so it\'s heard even when the '
+              'ringer is on silent or vibrate.',
+              style: _hint,
+            ),
+            const SizedBox(height: 8),
+            DropdownButton<String>(
+              isExpanded: true,
+              value: _alarmSoundId,
+              items: [
+                for (final o in kAlarmSounds)
+                  DropdownMenuItem(value: o.id, child: Text(o.label)),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _alarmSoundId = v);
+                _commit();
+              },
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _sendTestAlarm,
+                icon: const Icon(Icons.volume_up),
+                label: const Text('Test this sound'),
+              ),
+            ),
+            const Text(
+              'To use a different tone, set it as your phone\'s Alarm or '
+              'Ringtone sound in Settings > Sound, then pick it here.',
+              style: _hint,
+            ),
+          ]),
+          _card([
             Row(
               children: [
                 Icon(
@@ -444,8 +482,21 @@ class _HomeScreenState extends State<HomeScreen> {
                   label: const Text('Restart service'),
                 ),
                 OutlinedButton.icon(
-                  onPressed: () =>
-                      Permission.ignoreBatteryOptimizations.request(),
+                  onPressed: () async {
+                    // Guarded: on devices/ROMs without this settings screen the
+                    // request can throw — don't let it crash the app.
+                    try {
+                      await Permission.ignoreBatteryOptimizations.request();
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                              content:
+                                  Text('Could not open battery setting: $e')),
+                        );
+                      }
+                    }
+                  },
                   icon: const Icon(Icons.battery_saver),
                   label: const Text('Allow background'),
                 ),

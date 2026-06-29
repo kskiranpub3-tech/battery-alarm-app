@@ -28,12 +28,19 @@ Toggle **Quiet hours** and set a start/end time (e.g. 22:00–07:00, wraps past
 midnight). During that window the app still detects thresholds but posts a
 **silent, visual-only** notification — no sound, no vibration.
 
-### 3. Volume control / override
-Toggle **Override volume** and set an alarm volume (10–100%). When an alarm
-fires (outside quiet hours) the app plays its own tone at that level via the
-media stream, so it's **heard even if the ringer is on silent**, at the volume
-you picked — independent of your current ringer setting. Turn the override off
-to instead use Android's normal alarm sound at the system volume.
+### 3. Alarm sound selection (louder than a notification beep)
+Pick the alarm sound under **Alarm sound**:
+- **Alarm (loudest)** – your phone's own alarm tone (default)
+- **Ringtone** – your phone's ringtone
+- **Notification tone** – your phone's notification sound
+- **Default beep** – the plain system notification beep
+
+All choices play on the **alarm stream**, so they're **heard even when the
+ringer is on silent or vibrate**, and at the alarm volume rather than the (often
+quiet) notification volume. "Default beep" is the short tone older builds used —
+the new default is the much louder Alarm tone. Use **Test this sound** to hear
+the current choice. To use a specific tone, set it as your phone's Alarm or
+Ringtone sound (Settings → Sound), then select it here.
 
 ## How to build it (from your phone)
 1. Create a GitHub repo and upload this whole folder, keeping the layout:

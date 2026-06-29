@@ -15,6 +15,13 @@ PERMISSIONS = [
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.WAKE_LOCK",
     "android.permission.RECEIVE_BOOT_COMPLETED",
+    "android.permission.VIBRATE",
+    # Needed by the "Allow background" button (permission_handler's
+    # ignoreBatteryOptimizations). Without it the request throws and crashes.
+    "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+    # Lets the alarm post a full-screen intent on Android 14+ (we set
+    # fullScreenIntent: true on the alarm notification).
+    "android.permission.USE_FULL_SCREEN_INTENT",
 ]
 
 # Override the plugin's service so its foreground-service type is one we hold a

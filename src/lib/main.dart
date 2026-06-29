@@ -396,6 +396,40 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               onChangeEnd: (_) => _commit(),
             ),
           ]),
+          _card([
+            Row(
+              children: const [
+                Icon(Icons.health_and_safety, size: 20),
+                SizedBox(width: 8),
+                Expanded(
+                    child: Text('Stop charging at a set %?', style: _label)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'This app can only alarm — Android does not let any app actually '
+              'stop charging at a set level. To truly cap charging, turn on '
+              'your phone\'s built-in battery protection:',
+              style: _hint,
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              '• Samsung: Settings > Battery > Battery protection\n'
+              '• Pixel: Settings > Battery > Charging optimisation\n'
+              '• OnePlus / Oppo / Realme: Battery > Smart (Optimised) charging\n'
+              '• Xiaomi / Redmi / POCO: Battery > Battery protection\n'
+              '• Sony: Battery > Battery Care\n'
+              '• Asus: Battery > Charging (custom limit)',
+              style: _hint,
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'If your phone has it, set the cap there and use this app\'s alarm '
+              'as a backup. Only rooted phones can let an app control charging '
+              'directly.',
+              style: _hint,
+            ),
+          ]),
           _buildStatusCard(),
           _card([
             const Text('Battery-saving check interval', style: _label),

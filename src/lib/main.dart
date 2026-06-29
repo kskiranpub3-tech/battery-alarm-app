@@ -99,29 +99,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _init() async {
     await _load();
     await _refreshServiceStatus();
-    // Self-heal: if monitoring is enabled but the service isn't running (the OS
-    // killed it, or a past start failed), start it again now. We're freshly
-    // resumed on a cold open, so the foreground-service start is permitted.
-    if (_monitoring && !_serviceRunning) {
-      await _recoverService();
-    }
-  }
-
-  /// Brings the background service back up without bothering the user. Leaves the
-  /// "service stopped" warning visible only if it genuinely can't be started.
-  Future<void> _recoverService() async {
-    final service = FlutterBackgroundService();
-    try {
-      await _ensureResumed();
-      if (!await service.isRunning()) {
-        await service.startService();
-        await Future.delayed(const Duration(milliseconds: 600));
-      }
-      _pushSettings();
-    } catch (_) {
-      // Keep the warning + reliability tips visible; nothing else we can do.
-    }
-    await _refreshServiceStatus();
+    // NOTE: we deliberately do NOT auto-start the service on open. Starting a
+    // foreground service this early in the cold-start lifecycle can crash, and
+    // doing it on every launch turns one failure into a crash loop. The service
+    // is started only by explicit user action (the toggle / Restart button),
+    // when the app is fully foregrounded.
   }
 
   @override
@@ -530,10 +512,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
                   'Monitoring is enabled but the background service is not '
-                  'running. The app tried to restart it automatically and '
-                  'could not — your phone is likely stopping it. Turn off '
-                  'battery optimization below (and Autostart on some brands), '
-                  'then tap Restart service.',
+                  'running — your phone may have stopped it. Tap Restart '
+                  'service, and turn off battery optimization below (and '
+                  'Autostart on some brands) so it stays up.',
                   style: TextStyle(fontSize: 12, color: Colors.orangeAccent),
                 ),
               ),

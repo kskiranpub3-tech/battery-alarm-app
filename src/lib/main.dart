@@ -64,7 +64,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   double _charge = 80;
   double _discharge = 20;
   bool _monitoring = false;
@@ -80,9 +80,16 @@ class _HomeScreenState extends State<HomeScreen> {
   BatteryInfo? _info;
   Timer? _infoTimer;
 
+  // Completers waiting for the activity to return to the resumed state. Used to
+  // avoid starting the foreground service while we're backgrounded (e.g. while a
+  // permission dialog is up), which crashes on Android 12+ with
+  // ForegroundServiceStartNotAllowedException.
+  final List<Completer<void>> _resumeWaiters = [];
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
     _refreshServiceStatus();
     _pollInfo();
@@ -92,8 +99,35 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _infoTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _resumeWaiters.isNotEmpty) {
+      final waiters = List<Completer<void>>.from(_resumeWaiters);
+      _resumeWaiters.clear();
+      for (final c in waiters) {
+        if (!c.isCompleted) c.complete();
+      }
+    }
+  }
+
+  /// Waits until the activity is in the resumed state before returning, so it's
+  /// safe to start a foreground service. Returns immediately if already resumed;
+  /// gives up after a few seconds so we never hang.
+  Future<void> _ensureResumed() async {
+    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+      return;
+    }
+    final completer = Completer<void>();
+    _resumeWaiters.add(completer);
+    await completer.future
+        .timeout(const Duration(seconds: 5), onTimeout: () {});
+    // A short settle so the OS fully restores foreground-service privileges.
+    await Future.delayed(const Duration(milliseconds: 300));
   }
 
   Future<void> _pollInfo() async {
@@ -117,6 +151,9 @@ class _HomeScreenState extends State<HomeScreen> {
         await Future.delayed(const Duration(milliseconds: 800));
       }
       await Permission.notification.request();
+      // The permission dialog can background us; don't start the FGS until we're
+      // resumed again (Android 12+ crashes on background FGS starts).
+      await _ensureResumed();
       await service.startService();
       await Future.delayed(const Duration(milliseconds: 800));
       _pushSettings();
@@ -205,6 +242,11 @@ class _HomeScreenState extends State<HomeScreen> {
     await _save();
     if (value) {
       await Permission.notification.request();
+      // Requesting the permission shows a system dialog that backgrounds the
+      // activity. Starting a foreground service while backgrounded throws
+      // ForegroundServiceStartNotAllowedException and crashes on Android 12+,
+      // so wait until we're resumed again before starting it.
+      await _ensureResumed();
     }
     final service = FlutterBackgroundService();
     try {

@@ -1,7 +1,7 @@
 name: battery_alarm_app
 description: Adaptive battery alarm — alerts you to unplug at a high % and charge at a low %, with quiet hours and volume control.
 publish_to: 'none'
-version: 1.2.0+3
+version: 1.2.1+4
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

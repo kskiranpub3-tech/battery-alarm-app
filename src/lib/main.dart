@@ -16,26 +16,29 @@ Future<void> _initUiNotifications() async {
   const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
   await _uiNotifications
       .initialize(const InitializationSettings(android: androidInit));
-  final android = _uiNotifications.resolvePlatformSpecificImplementation<
-      AndroidFlutterLocalNotificationsPlugin>();
-  // One channel per selectable alarm sound, so the test alarm and the real
-  // alarms can ring with whichever sound the user picked.
-  await createAlarmSoundChannels(android);
+  // Create EVERY channel here, before the background service can possibly
+  // start. The service's native side posts its foreground notification
+  // immediately on start; if its channel doesn't exist yet, Android kills the
+  // app ("Bad notification for startForeground") — the cause of the crash when
+  // enabling monitoring on a fresh install.
+  await createAllNotificationChannels(_uiNotifications);
 }
 
 String? _startupError;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  try {
-    await initializeBackgroundService();
-  } catch (e) {
-    _startupError = 'Service init failed: $e';
-  }
+  // Channels first: the background service must never start before its
+  // foreground-notification channel exists.
   try {
     await _initUiNotifications();
   } catch (e) {
-    _startupError = '${_startupError ?? ''}\nNotifications init failed: $e';
+    _startupError = 'Notifications init failed: $e';
+  }
+  try {
+    await initializeBackgroundService();
+  } catch (e) {
+    _startupError = '${_startupError ?? ''}\nService init failed: $e';
   }
   runApp(const BatteryAlarmApp());
 }
@@ -99,11 +102,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _init() async {
     await _load();
     await _refreshServiceStatus();
-    // NOTE: we deliberately do NOT auto-start the service on open. Starting a
-    // foreground service this early in the cold-start lifecycle can crash, and
-    // doing it on every launch turns one failure into a crash loop. The service
-    // is started only by explicit user action (the toggle / Restart button),
-    // when the app is fully foregrounded.
+    // Self-heal: if monitoring is on but the OS killed the service, bring it
+    // back. Deferred until after first frame + a short delay so the UI is up
+    // and the app is fully foregrounded first. Safe now that every channel is
+    // created in main() before any service start (the missing monitor channel
+    // was what crashed startForeground before).
+    if (_monitoring && !_serviceRunning) {
+      await Future.delayed(const Duration(seconds: 1));
+      if (!mounted) return;
+      try {
+        await _ensureResumed();
+        final service = FlutterBackgroundService();
+        if (!await service.isRunning()) {
+          await service.startService();
+          await Future.delayed(const Duration(milliseconds: 600));
+        }
+        _pushSettings();
+      } catch (_) {
+        // Leave the warning card + Restart button as the manual fallback.
+      }
+      await _refreshServiceStatus();
+    }
   }
 
   @override
@@ -546,9 +565,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
                   'Monitoring is enabled but the background service is not '
-                  'running — your phone may have stopped it. Tap Restart '
-                  'service, and turn off battery optimization below (and '
-                  'Autostart on some brands) so it stays up.',
+                  'running. The app restarts it automatically when opened; if '
+                  'this message stays, tap Restart service and turn off '
+                  'battery optimization below (and Autostart on some brands).',
                   style: TextStyle(fontSize: 12, color: Colors.orangeAccent),
                 ),
               ),

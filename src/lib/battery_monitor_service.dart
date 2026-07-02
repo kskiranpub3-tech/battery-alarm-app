@@ -81,6 +81,33 @@ AlarmSoundOption alarmSoundById(String? id) => kAlarmSounds.firstWhere(
           kAlarmSounds.firstWhere((o) => o.id == kDefaultAlarmSoundId),
     );
 
+/// Creates every notification channel the app uses. MUST run in the UI isolate
+/// BEFORE the background service is ever started: flutter_background_service
+/// posts its foreground notification on [_monitorChannelId] natively the moment
+/// the service starts, and if that channel doesn't exist yet Android kills the
+/// whole app with "Bad notification for startForeground" (RemoteServiceException).
+/// Safe to call repeatedly; re-creating an existing channel is a no-op.
+Future<void> createAllNotificationChannels(
+    FlutterLocalNotificationsPlugin plugin) async {
+  final android = plugin.resolvePlatformSpecificImplementation<
+      AndroidFlutterLocalNotificationsPlugin>();
+  await android?.createNotificationChannel(const AndroidNotificationChannel(
+    _monitorChannelId,
+    _monitorChannelName,
+    description: 'Persistent notification while monitoring battery',
+    importance: Importance.low,
+  ));
+  await createAlarmSoundChannels(android);
+  await android?.createNotificationChannel(const AndroidNotificationChannel(
+    _silentChannelId,
+    _silentChannelName,
+    description: 'Charge/discharge alarms during quiet hours',
+    importance: Importance.low,
+    playSound: false,
+    enableVibration: false,
+  ));
+}
+
 /// Creates one max-importance, alarm-stream channel per selectable sound. Safe
 /// to call repeatedly; re-creating an existing channel id is a no-op on Android.
 Future<void> createAlarmSoundChannels(
@@ -290,27 +317,9 @@ void onServiceStart(ServiceInstance service) async {
 Future<void> _initNotifications(FlutterLocalNotificationsPlugin plugin) async {
   const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
   await plugin.initialize(const InitializationSettings(android: androidInit));
-
-  final android = plugin.resolvePlatformSpecificImplementation<
-      AndroidFlutterLocalNotificationsPlugin>();
-
-  await android?.createNotificationChannel(const AndroidNotificationChannel(
-    _monitorChannelId,
-    _monitorChannelName,
-    description: 'Persistent notification while monitoring battery',
-    importance: Importance.low,
-  ));
-  // One channel per selectable alarm sound (includes the legacy
-  // _alarmChannelId as the "Default beep" option).
-  await createAlarmSoundChannels(android);
-  await android?.createNotificationChannel(const AndroidNotificationChannel(
-    _silentChannelId,
-    _silentChannelName,
-    description: 'Charge/discharge alarms during quiet hours',
-    importance: Importance.low,
-    playSound: false,
-    enableVibration: false,
-  ));
+  // Channels are created in the UI isolate before the service can start; this
+  // re-create is a harmless no-op that covers boot-time starts too.
+  await createAllNotificationChannels(plugin);
 }
 
 /// Fires an alert respecting quiet hours. The system alarm-channel notification
